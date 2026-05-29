@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const https = require('https');
 require('dotenv').config();
 const { connectDB } = require('./config/db');
 
@@ -15,7 +16,10 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: [
+      process.env.CLIENT_URL || 'http://localhost:5173',
+      'https://pawfectmatch-client.vercel.app',
+    ],
     credentials: true,
   })
 );
@@ -39,28 +43,29 @@ app.get('/', (req, res) => {
   res.json({ message: '🐾 Pet Adoption API is running' });
 });
 
-// ─── Database Connection ──────────────────────────────────────
-// Starts connecting immediately at module scope.
-// On Vercel, this runs on every cold start; the connection is
-// reused across warm invocations via Node's module cache.
-// In local dev, we wait for the connection before starting the
-// HTTP server (see the `if (VERCEL !== '1')` block below).
 const dbConnection = connectDB();
 
-// ─── Vercel Serverless Export ──────────────────────────────────
-// Vercel needs the Express app exported as its module handler.
-// The `app.listen()` below only runs in local/dev environments.
 module.exports = app;
 
-// ─── Local Development Server ───────────────────────────────────
 if (process.env.VERCEL !== '1') {
   dbConnection
     .then(() => {
       app.listen(port, () => {
         console.log(`🚀 Server running on port ${port}`);
+
+        // Keep alive - ping every 14 minutes
+        if (process.env.NODE_ENV !== 'development') {
+          setInterval(() => {
+            https.get('https://pawfectmatch-server-q6yd.onrender.com/', (res) => {
+              console.log(`🔄 Keep alive ping: ${res.statusCode}`);
+            }).on('error', (err) => {
+              console.log('Keep alive error:', err.message);
+            });
+          }, 14 * 60 * 1000);
+        }
       });
     })
     .catch(() => {
-      process.exit(1); // error already logged by connectDB()
+      process.exit(1);
     });
 }
