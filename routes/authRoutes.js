@@ -16,7 +16,6 @@ router.post('/login', async (req, res) => {
     const db = getDB();
     const usersCollection = db.collection('users');
 
-    // Check if user exists, if not create one
     let user = await usersCollection.findOne({ email });
     if (!user) {
       const newUser = {
@@ -30,19 +29,17 @@ router.post('/login', async (req, res) => {
       user = { ...newUser, _id: result.insertedId };
     }
 
-    // Generate JWT with role included
     const token = jwt.sign(
       { email: user.email, name: user.name, photoURL: user.photoURL, role: user.role },
       process.env.ACCESS_TOKEN_SECRET,
       { expiresIn: '7d' }
     );
 
-    // Set HTTPOnly cookie
     res.cookie('token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      secure: true,
+      sameSite: 'none',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
     res.status(200).json({
@@ -59,8 +56,8 @@ router.post('/login', async (req, res) => {
 router.post('/logout', (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+    secure: true,
+    sameSite: 'none',
   });
   res.status(200).json({ message: 'Logout successful' });
 });
