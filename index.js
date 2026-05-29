@@ -16,10 +16,19 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(
   cors({
-    origin: [
-      process.env.CLIENT_URL || 'http://localhost:5173',
-      'https://pawfectmatch-client.vercel.app',
-    ],
+    origin: function(origin, callback) {
+      const allowedOrigins = [
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'https://pawfectmatch-client.vercel.app',
+        process.env.CLIENT_URL,
+      ];
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, true); // allow all for now
+      }
+    },
     credentials: true,
   })
 );
