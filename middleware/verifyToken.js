@@ -2,7 +2,9 @@ const jwt = require('jsonwebtoken');
 const { getDB } = require('../config/db');
 
 const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
+  const token =
+    req.cookies?.token ||
+    req.headers?.authorization?.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ message: 'Unauthorized - No token provided' });
@@ -17,7 +19,6 @@ const verifyToken = (req, res, next) => {
   }
 };
 
-// Verify admin role (must be used after verifyToken)
 const verifyAdmin = async (req, res, next) => {
   try {
     const db = getDB();

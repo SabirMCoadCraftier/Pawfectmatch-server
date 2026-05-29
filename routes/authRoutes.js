@@ -4,7 +4,6 @@ const jwt = require('jsonwebtoken');
 const { getDB } = require('../config/db');
 const { verifyToken } = require('../middleware/verifyToken');
 
-// POST /api/auth/login - Generate JWT token
 router.post('/login', async (req, res) => {
   const { email, name, photoURL } = req.body;
 
@@ -44,6 +43,7 @@ router.post('/login', async (req, res) => {
 
     res.status(200).json({
       message: 'Login successful',
+      token,
       user: { email: user.email, name: user.name, photoURL: user.photoURL, role: user.role },
     });
   } catch (error) {
@@ -52,7 +52,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// POST /api/auth/logout - Clear JWT cookie
 router.post('/logout', (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
@@ -62,7 +61,6 @@ router.post('/logout', (req, res) => {
   res.status(200).json({ message: 'Logout successful' });
 });
 
-// GET /api/auth/me - Get current user from token
 router.get('/me', verifyToken, async (req, res) => {
   try {
     const db = getDB();
