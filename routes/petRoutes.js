@@ -12,33 +12,33 @@ router.get('/', async (req, res) => {
 
     const { search, species, sort, page = 1, limit = 12 } = req.query;
     
-    // শুধু যে পেটগুলো এখনো অ্যাডপ্ট হয়নি সেগুলো দেখাবে
+    // Only fetch pets that are not adopted yet
     const query = { adopted: false };
 
-    // সার্চ ফিল্টার (Case-insensitive)
+    // Search filter (Case-insensitive)
     if (search) {
       query.petName = { $regex: search, $options: 'i' };
     }
 
-    // স্পিসিস ফিল্টার (কমা সেপারেটেড স্ট্রিং হ্যান্ডলিং)
+    // Species filter (Handles comma-separated strings)
     if (species) {
       const speciesArray = species.split(',').map(s => s.trim());
       query.species = { $in: speciesArray };
     }
 
-    // সর্টিং লজিক (String to Number টাইপ ফিক্সড)
+    // Sorting logic (Ensuring correct order based on input)
     let sortOption = { createdAt: -1 };
     if (sort === 'age') sortOption = { age: 1 };
     if (sort === 'fee_asc') sortOption = { adoptionFee: 1 };
     if (sort === 'fee_desc') sortOption = { adoptionFee: -1 };
     if (sort === 'name') sortOption = { petName: 1 };
 
-    // পেজিনেশন ভ্যালু পার্স করা
+    // Parse pagination values securely
     const parsedPage = Math.max(1, parseInt(page) || 1);
     const parsedLimit = Math.max(1, parseInt(limit) || 12);
     const skip = (parsedPage - 1) * parsedLimit;
 
-    // প্যারালাল এক্সিকিউশন (পারফরম্যান্স বুস্ট)
+    // Parallel execution for optimized performance
     const [total, pets] = await Promise.all([
       petsCollection.countDocuments(query),
       petsCollection
@@ -84,7 +84,7 @@ router.get('/featured', async (req, res) => {
     const db = getDB();
     const pets = await db
       .collection('pets')
-      .find({ adopted: false }) // শুধুমাত্র যেগুলো এখনো অ্যাডপ্ট হয়নি
+      .find({ adopted: false }) // Filter out already adopted pets
       .sort({ createdAt: -1 })
       .limit(6)
       .toArray();
@@ -114,7 +114,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
-    // ওনার ডিটেইলস নিয়ে আসা (পাসওয়ার্ড বা সেনসিটিভ ডেটা বাদ দিয়ে)
+    // Fetch owner details excluding sensitive data
     const owner = await db.collection('users').findOne(
       { email: pet.ownerEmail },
       { projection: { name: 1, email: 1, photoURL: 1 } }
@@ -143,7 +143,7 @@ router.post('/', verifyToken, async (req, res) => {
     description,
   } = req.body;
 
-  // রিকোয়ার্ড ফিল্ড ভ্যালিডেশন
+  // Required fields validation
   if (!petName || !species || !image) {
     return res
       .status(400)
@@ -158,13 +158,13 @@ router.post('/', verifyToken, async (req, res) => {
       petName: petName.trim(),
       species: species.trim(),
       breed: breed ? breed.trim() : '',
-      age: age ? Number(age) : 0, // ডেটা টাইপ নাম্বার নিশ্চিত করা
+      age: age ? Number(age) : 0, // Ensure data type is a number
       gender: gender || 'Unknown',
       image,
       healthStatus: healthStatus || 'Unknown',
       vaccinationStatus: vaccinationStatus || 'Unknown',
       location: location ? location.trim() : '',
-      adoptionFee: adoptionFee ? Number(adoptionFee) : 0, // ডেটা টাইপ নাম্বার নিশ্চিত করা
+      adoptionFee: adoptionFee ? Number(adoptionFee) : 0, // Ensure data type is a number
       description: description ? description.trim() : '',
       ownerEmail: req.user.email,
       adopted: false,
@@ -209,7 +209,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
     allowedFields.forEach((field) => {
       if (req.body[field] !== undefined) {
-        // এজ এবং ফি আপডেট করার সময় নাম্বার টাইপ কাস্টিং
+        // Enforce type casting to number for age and adoptionFee
         if (field === 'age' || field === 'adoptionFee') {
           updateFields[field] = Number(req.body[field]);
         } else {
@@ -222,11 +222,11 @@ router.patch('/:id', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'No fields provided for update' });
     }
 
-    // এক কোয়েরিতেই ওনারশিপ ভেরিফাই এবং আপডেট (DB hit কমাবে)
+    // Verify ownership and update in a single query to reduce database load
     const result = await petsCollection.updateOne(
       { 
         _id: new ObjectId(req.params.id), 
-        ownerEmail: req.user.email // শুধুমাত্র ওনার নিজেই আপডেট করতে পারবে
+        ownerEmail: req.user.email // Ensure only the owner can modify this record
       },
       { $set: updateFields }
     );
@@ -258,10 +258,10 @@ router.delete('/:id', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'Invalid pet ID' });
     }
 
-    // এক কোয়েরিতেই ওনারশিপ চেক ও ডিলিট
+    // Verify ownership and delete in a single query
     const result = await petsCollection.deleteOne({
       _id: new ObjectId(req.params.id),
-      ownerEmail: req.user.email // শুধুমাত্র ওনার নিজেই ডিলিট করতে পারবে
+      ownerEmail: req.user.email // Ensure only the owner can delete this record
     });
 
     if (result.deletedCount === 0) {
