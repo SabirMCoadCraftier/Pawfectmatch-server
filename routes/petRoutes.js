@@ -4,45 +4,55 @@ const { ObjectId } = require('mongodb');
 const { getDB } = require('../config/db');
 const { verifyToken } = require('../middleware/verifyToken');
 
-// GET /api/pets - Get all pets with search, filter, sort
+// GET /api/pets - Get all available pets with search, filter, sort & pagination
 router.get('/', async (req, res) => {
-  const { search, species, sort, page = 1, limit = 12 } = req.query;
-
   try {
     const db = getDB();
     const petsCollection = db.collection('pets');
 
-    const query = {};
+    const { search, species, sort, page = 1, limit = 12 } = req.query;
+    
+    // শুধু যে পেটগুলো এখনো অ্যাডপ্ট হয়নি সেগুলো দেখাবে
+    const query = { adopted: false };
 
+    // সার্চ ফিল্টার (Case-insensitive)
     if (search) {
       query.petName = { $regex: search, $options: 'i' };
     }
 
+    // স্পিসিস ফিল্টার (কমা সেপারেটেড স্ট্রিং হ্যান্ডলিং)
     if (species) {
-      const speciesArray = species.split(',');
+      const speciesArray = species.split(',').map(s => s.trim());
       query.species = { $in: speciesArray };
     }
 
+    // সর্টিং লজিক (String to Number টাইপ ফিক্সড)
     let sortOption = { createdAt: -1 };
     if (sort === 'age') sortOption = { age: 1 };
     if (sort === 'fee_asc') sortOption = { adoptionFee: 1 };
     if (sort === 'fee_desc') sortOption = { adoptionFee: -1 };
     if (sort === 'name') sortOption = { petName: 1 };
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const total = await petsCollection.countDocuments(query);
+    // পেজিনেশন ভ্যালু পার্স করা
+    const parsedPage = Math.max(1, parseInt(page) || 1);
+    const parsedLimit = Math.max(1, parseInt(limit) || 12);
+    const skip = (parsedPage - 1) * parsedLimit;
 
-    const pets = await petsCollection
-      .find(query)
-      .sort(sortOption)
-      .skip(skip)
-      .limit(parseInt(limit))
-      .toArray();
+    // প্যারালাল এক্সিকিউশন (পারফরম্যান্স বুস্ট)
+    const [total, pets] = await Promise.all([
+      petsCollection.countDocuments(query),
+      petsCollection
+        .find(query)
+        .sort(sortOption)
+        .skip(skip)
+        .limit(parsedLimit)
+        .toArray()
+    ]);
 
     res.status(200).json({
       pets,
-      totalPages: Math.ceil(total / parseInt(limit)),
-      currentPage: parseInt(page),
+      totalPages: Math.ceil(total / parsedLimit),
+      currentPage: parsedPage,
       total,
     });
   } catch (error) {
@@ -51,7 +61,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/pets/my - Get my pets (private)
+// GET /api/pets/my - Get logged-in user's pets (private)
 router.get('/my', verifyToken, async (req, res) => {
   try {
     const db = getDB();
@@ -68,13 +78,13 @@ router.get('/my', verifyToken, async (req, res) => {
   }
 });
 
-// GET /api/pets/featured - Get featured pets (latest 6)
+// GET /api/pets/featured - Get latest 6 available pets
 router.get('/featured', async (req, res) => {
   try {
     const db = getDB();
     const pets = await db
       .collection('pets')
-      .find({})
+      .find({ adopted: false }) // শুধুমাত্র যেগুলো এখনো অ্যাডপ্ট হয়নি
       .sort({ createdAt: -1 })
       .limit(6)
       .toArray();
@@ -86,7 +96,7 @@ router.get('/featured', async (req, res) => {
   }
 });
 
-// GET /api/pets/:id - Get single pet
+// GET /api/pets/:id - Get a single pet with owner info
 router.get('/:id', async (req, res) => {
   try {
     const db = getDB();
@@ -104,20 +114,20 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Pet not found' });
     }
 
-    // Get owner info
+    // ওনার ডিটেইলস নিয়ে আসা (পাসওয়ার্ড বা সেনসিটিভ ডেটা বাদ দিয়ে)
     const owner = await db.collection('users').findOne(
       { email: pet.ownerEmail },
       { projection: { name: 1, email: 1, photoURL: 1 } }
     );
 
-    res.status(200).json({ ...pet, owner });
+    res.status(200).json({ ...pet, owner: owner || null });
   } catch (error) {
     console.error('Get pet error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
-// POST /api/pets - Add new pet (private)
+// POST /api/pets - Add a new pet (private)
 router.post('/', verifyToken, async (req, res) => {
   const {
     petName,
@@ -133,6 +143,7 @@ router.post('/', verifyToken, async (req, res) => {
     description,
   } = req.body;
 
+  // রিকোয়ার্ড ফিল্ড ভ্যালিডেশন
   if (!petName || !species || !image) {
     return res
       .status(400)
@@ -144,17 +155,17 @@ router.post('/', verifyToken, async (req, res) => {
     const petsCollection = db.collection('pets');
 
     const newPet = {
-      petName,
-      species,
-      breed: breed || '',
-      age: age || 0,
+      petName: petName.trim(),
+      species: species.trim(),
+      breed: breed ? breed.trim() : '',
+      age: age ? Number(age) : 0, // ডেটা টাইপ নাম্বার নিশ্চিত করা
       gender: gender || 'Unknown',
       image,
       healthStatus: healthStatus || 'Unknown',
       vaccinationStatus: vaccinationStatus || 'Unknown',
-      location: location || '',
-      adoptionFee: adoptionFee || 0,
-      description: description || '',
+      location: location ? location.trim() : '',
+      adoptionFee: adoptionFee ? Number(adoptionFee) : 0, // ডেটা টাইপ নাম্বার নিশ্চিত করা
+      description: description ? description.trim() : '',
       ownerEmail: req.user.email,
       adopted: false,
       createdAt: new Date(),
@@ -171,7 +182,7 @@ router.post('/', verifyToken, async (req, res) => {
   }
 });
 
-// PATCH /api/pets/:id - Update pet (owner only)
+// PATCH /api/pets/:id - Update pet (owner only - Optimized)
 router.patch('/:id', verifyToken, async (req, res) => {
   try {
     const db = getDB();
@@ -179,20 +190,6 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
     if (!ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ message: 'Invalid pet ID' });
-    }
-
-    const pet = await petsCollection.findOne({
-      _id: new ObjectId(req.params.id),
-    });
-
-    if (!pet) {
-      return res.status(404).json({ message: 'Pet not found' });
-    }
-
-    if (pet.ownerEmail !== req.user.email) {
-      return res
-        .status(403)
-        .json({ message: 'You can only update your own pets' });
     }
 
     const updateFields = {};
@@ -212,17 +209,36 @@ router.patch('/:id', verifyToken, async (req, res) => {
 
     allowedFields.forEach((field) => {
       if (req.body[field] !== undefined) {
-        updateFields[field] = req.body[field];
+        // এজ এবং ফি আপডেট করার সময় নাম্বার টাইপ কাস্টিং
+        if (field === 'age' || field === 'adoptionFee') {
+          updateFields[field] = Number(req.body[field]);
+        } else {
+          updateFields[field] = req.body[field];
+        }
       }
     });
 
+    if (Object.keys(updateFields).length === 0) {
+      return res.status(400).json({ message: 'No fields provided for update' });
+    }
+
+    // এক কোয়েরিতেই ওনারশিপ ভেরিফাই এবং আপডেট (DB hit কমাবে)
     const result = await petsCollection.updateOne(
-      { _id: new ObjectId(req.params.id) },
+      { 
+        _id: new ObjectId(req.params.id), 
+        ownerEmail: req.user.email // শুধুমাত্র ওনার নিজেই আপডেট করতে পারবে
+      },
       { $set: updateFields }
     );
 
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ 
+        message: 'Pet not found or you do not have permission to update it' 
+      });
+    }
+
     if (result.modifiedCount === 0) {
-      return res.status(400).json({ message: 'No changes made' });
+      return res.status(400).json({ message: 'No changes were made' });
     }
 
     res.status(200).json({ message: 'Pet updated successfully' });
@@ -232,7 +248,7 @@ router.patch('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// DELETE /api/pets/:id - Delete pet (owner only)
+// DELETE /api/pets/:id - Delete pet (owner only - Optimized)
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const db = getDB();
@@ -242,21 +258,17 @@ router.delete('/:id', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'Invalid pet ID' });
     }
 
-    const pet = await petsCollection.findOne({
+    // এক কোয়েরিতেই ওনারশিপ চেক ও ডিলিট
+    const result = await petsCollection.deleteOne({
       _id: new ObjectId(req.params.id),
+      ownerEmail: req.user.email // শুধুমাত্র ওনার নিজেই ডিলিট করতে পারবে
     });
 
-    if (!pet) {
-      return res.status(404).json({ message: 'Pet not found' });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ 
+        message: 'Pet not found or you do not have permission to delete it' 
+      });
     }
-
-    if (pet.ownerEmail !== req.user.email) {
-      return res
-        .status(403)
-        .json({ message: 'You can only delete your own pets' });
-    }
-
-    await petsCollection.deleteOne({ _id: new ObjectId(req.params.id) });
 
     res.status(200).json({ message: 'Pet deleted successfully' });
   } catch (error) {
