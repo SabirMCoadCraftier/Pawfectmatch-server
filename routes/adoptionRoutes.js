@@ -41,9 +41,9 @@ router.post('/', verifyToken, async (req, res) => {
         .json({ message: 'This pet has already been adopted' });
     }
 
-    // Check for duplicate pending request
+    // Check for duplicate pending request (FIXED: matching petId as ObjectId)
     const existingRequest = await requestsCollection.findOne({
-      petId,
+      petId: new ObjectId(petId),
       requesterEmail: req.user.email,
       status: { $in: ['pending', 'approved'] },
     });
@@ -55,7 +55,7 @@ router.post('/', verifyToken, async (req, res) => {
     }
 
     const newRequest = {
-      petId,
+      petId: new ObjectId(petId), // FIX 1: Storing as ObjectId for relation consistency
       petName: pet.petName,
       petImage: pet.image,
       requesterEmail: req.user.email,
@@ -102,6 +102,10 @@ router.get('/pending/:petId', verifyToken, async (req, res) => {
     const db = getDB();
     const { petId } = req.params;
 
+    if (!ObjectId.isValid(petId)) {
+      return res.status(400).json({ message: 'Invalid pet ID' });
+    }
+
     const pet = await db.collection('pets').findOne({ _id: new ObjectId(petId) });
 
     if (!pet) {
@@ -112,9 +116,10 @@ router.get('/pending/:petId', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Unauthorized' });
     }
 
+    // FIX 2: Explicitly query petId as an ObjectId
     const requests = await db
       .collection('adoptionRequests')
-      .find({ petId, status: { $in: ['pending', 'approved', 'rejected'] } })
+      .find({ petId: new ObjectId(petId) })
       .sort({ createdAt: -1 })
       .toArray();
 
@@ -161,7 +166,7 @@ router.patch('/:id/approve', verifyToken, async (req, res) => {
       return res.status(404).json({ message: 'Request not found' });
     }
 
-    // Verify ownership
+    // Verify ownership (FIX 3: Ensure request.petId is treated safely as ObjectId)
     const pet = await petsCollection.findOne({ _id: new ObjectId(request.petId) });
     if (!pet || pet.ownerEmail !== req.user.email) {
       return res.status(403).json({ message: 'Unauthorized' });
@@ -183,7 +188,7 @@ router.patch('/:id/approve', verifyToken, async (req, res) => {
     // Reject all other pending requests for this pet
     await requestsCollection.updateMany(
       {
-        petId: request.petId,
+        petId: new ObjectId(request.petId), // FIX 4: Querying with ObjectId match
         _id: { $ne: new ObjectId(req.params.id) },
         status: 'pending',
       },
