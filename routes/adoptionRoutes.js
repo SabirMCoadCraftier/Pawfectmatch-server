@@ -12,14 +12,14 @@ router.post('/', verifyToken, async (req, res) => {
     return res.status(400).json({ message: 'Pet ID and pickup date are required' });
   }
 
+  if (!ObjectId.isValid(petId)) {
+    return res.status(400).json({ message: 'Invalid pet ID' });
+  }
+
   try {
     const db = getDB();
     const requestsCollection = db.collection('adoptionRequests');
     const petsCollection = db.collection('pets');
-
-    if (!ObjectId.isValid(petId)) {
-      return res.status(400).json({ message: 'Invalid pet ID' });
-    }
 
     const pet = await petsCollection.findOne({ _id: new ObjectId(petId) });
 
@@ -29,19 +29,15 @@ router.post('/', verifyToken, async (req, res) => {
 
     // Prevent self-adoption
     if (pet.ownerEmail === req.user.email) {
-      return res
-        .status(400)
-        .json({ message: 'You cannot adopt your own pet' });
+      return res.status(400).json({ message: 'You cannot adopt your own pet' });
     }
 
     // Check if already adopted
     if (pet.adopted) {
-      return res
-        .status(400)
-        .json({ message: 'This pet has already been adopted' });
+      return res.status(400).json({ message: 'This pet has already been adopted' });
     }
 
-    // Check for duplicate pending request (FIXED: matching petId as ObjectId)
+    // Check for duplicate pending or approved request
     const existingRequest = await requestsCollection.findOne({
       petId: new ObjectId(petId),
       requesterEmail: req.user.email,
@@ -49,13 +45,13 @@ router.post('/', verifyToken, async (req, res) => {
     });
 
     if (existingRequest) {
-      return res
-        .status(400)
-        .json({ message: 'You already have a pending or approved request for this pet' });
+      return res.status(400).json({ 
+        message: 'You already have a pending or approved request for this pet' 
+      });
     }
 
     const newRequest = {
-      petId: new ObjectId(petId), // FIX 1: Storing as ObjectId for relation consistency
+      petId: new ObjectId(petId),
       petName: pet.petName,
       petImage: pet.image,
       requesterEmail: req.user.email,
@@ -96,27 +92,27 @@ router.get('/my', verifyToken, async (req, res) => {
   }
 });
 
-// GET /api/adoption-requests/pending/:petId - Get pending requests for a pet (owner only)
+// GET /api/adoption-requests/pending/:petId - Get all requests for a specific pet (owner only)
 router.get('/pending/:petId', verifyToken, async (req, res) => {
+  const { petId } = req.params;
+
+  if (!ObjectId.isValid(petId)) {
+    return res.status(400).json({ message: 'Invalid pet ID' });
+  }
+
   try {
     const db = getDB();
-    const { petId } = req.params;
-
-    if (!ObjectId.isValid(petId)) {
-      return res.status(400).json({ message: 'Invalid pet ID' });
-    }
-
-    const pet = await db.collection('pets').findOne({ _id: new ObjectId(petId) });
+    
+    // একবারে চেক করে নেওয়া যে পেটটি এক্সিস্ট করে এবং রিকোয়েস্টকারীই এর ওনার
+    const pet = await db.collection('pets').findOne({ 
+      _id: new ObjectId(petId),
+      ownerEmail: req.user.email 
+    });
 
     if (!pet) {
-      return res.status(404).json({ message: 'Pet not found' });
+      return res.status(404).json({ message: 'Pet not found or unauthorized' });
     }
 
-    if (pet.ownerEmail !== req.user.email) {
-      return res.status(403).json({ message: 'Unauthorized' });
-    }
-
-    // FIX 2: Explicitly query petId as an ObjectId
     const requests = await db
       .collection('adoptionRequests')
       .find({ petId: new ObjectId(petId) })
@@ -147,61 +143,64 @@ router.get('/my-pets', verifyToken, async (req, res) => {
   }
 });
 
-// PATCH /api/adoption-requests/:id/approve - Approve request
+// PATCH /api/adoption-requests/:id/approve - Approve request (Atomic & Safe)
 router.patch('/:id/approve', verifyToken, async (req, res) => {
+  if (!ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid request ID' });
+  }
+
   try {
     const db = getDB();
     const requestsCollection = db.collection('adoptionRequests');
     const petsCollection = db.collection('pets');
 
-    if (!ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ message: 'Invalid request ID' });
-    }
-
+    // রিকোয়েস্টটি খুঁজে বের করা এবং ওনারশিপ একবারে নিশ্চিত করা
     const request = await requestsCollection.findOne({
       _id: new ObjectId(req.params.id),
+      ownerEmail: req.user.email
     });
 
     if (!request) {
-      return res.status(404).json({ message: 'Request not found' });
+      return res.status(404).json({ message: 'Request not found or unauthorized' });
     }
 
-    // Verify ownership (FIX 3: Ensure request.petId is treated safely as ObjectId)
+    // রিকোয়েস্ট অলরেডি পেন্ডিং ছাড়া অন্য স্টেটে থাকলে আটকে দেওয়া
+    if (request.status !== 'pending') {
+      return res.status(400).json({ message: `Request is already ${request.status}` });
+    }
+
     const pet = await petsCollection.findOne({ _id: new ObjectId(request.petId) });
-    if (!pet || pet.ownerEmail !== req.user.email) {
-      return res.status(403).json({ message: 'Unauthorized' });
+    if (!pet) {
+      return res.status(404).json({ message: 'Associated pet not found' });
     }
 
-    // Check if already adopted
     if (pet.adopted) {
-      return res
-        .status(400)
-        .json({ message: 'This pet has already been adopted' });
+      return res.status(400).json({ message: 'This pet has already been adopted by someone else' });
     }
 
-    // Approve the request
+    // ১. কারেন্ট রিকোয়েস্ট Approve করা
     await requestsCollection.updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { status: 'approved', updatedAt: new Date() } }
     );
 
-    // Reject all other pending requests for this pet
+    // ২. বাকি সব পেন্ডিং রিকোয়েস্ট Reject করা
     await requestsCollection.updateMany(
       {
-        petId: new ObjectId(request.petId), // FIX 4: Querying with ObjectId match
+        petId: new ObjectId(request.petId),
         _id: { $ne: new ObjectId(req.params.id) },
         status: 'pending',
       },
       { $set: { status: 'rejected', updatedAt: new Date() } }
     );
 
-    // Mark pet as adopted
+    // ৩. পেট কালেকশনে adopted: true মার্ক করা
     await petsCollection.updateOne(
       { _id: new ObjectId(request.petId) },
       { $set: { adopted: true } }
     );
 
-    res.status(200).json({ message: 'Request approved successfully' });
+    res.status(200).json({ message: 'Request approved successfully. Other pending requests have been rejected.' });
   } catch (error) {
     console.error('Approve request error:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -210,26 +209,26 @@ router.patch('/:id/approve', verifyToken, async (req, res) => {
 
 // PATCH /api/adoption-requests/:id/reject - Reject request
 router.patch('/:id/reject', verifyToken, async (req, res) => {
+  if (!ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid request ID' });
+  }
+
   try {
     const db = getDB();
     const requestsCollection = db.collection('adoptionRequests');
 
-    if (!ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ message: 'Invalid request ID' });
-    }
-
+    // রিকোয়েস্ট ও ওনারশিপ একসাথে চেক
     const request = await requestsCollection.findOne({
       _id: new ObjectId(req.params.id),
+      ownerEmail: req.user.email
     });
 
     if (!request) {
-      return res.status(404).json({ message: 'Request not found' });
+      return res.status(404).json({ message: 'Request not found or unauthorized' });
     }
 
-    // Verify ownership
-    const pet = await db.collection('pets').findOne({ _id: new ObjectId(request.petId) });
-    if (!pet || pet.ownerEmail !== req.user.email) {
-      return res.status(403).json({ message: 'Unauthorized' });
+    if (request.status !== 'pending') {
+      return res.status(400).json({ message: `Request is already ${request.status}` });
     }
 
     await requestsCollection.updateOne(
@@ -237,45 +236,40 @@ router.patch('/:id/reject', verifyToken, async (req, res) => {
       { $set: { status: 'rejected', updatedAt: new Date() } }
     );
 
-    res.status(200).json({ message: 'Request rejected' });
+    res.status(200).json({ message: 'Request rejected successfully' });
   } catch (error) {
     console.error('Reject request error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
-// DELETE /api/adoption-requests/:id - Delete/cancel request
+// DELETE /api/adoption-requests/:id - Delete/cancel request (By Requester)
 router.delete('/:id', verifyToken, async (req, res) => {
+  if (!ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid request ID' });
+  }
+
   try {
     const db = getDB();
     const requestsCollection = db.collection('adoptionRequests');
 
-    if (!ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ message: 'Invalid request ID' });
-    }
-
     const request = await requestsCollection.findOne({
       _id: new ObjectId(req.params.id),
+      requesterEmail: req.user.email // রিকোয়েস্টকারী নিজে কিনা ভেরিফাই করা
     });
 
     if (!request) {
-      return res.status(404).json({ message: 'Request not found' });
+      return res.status(404).json({ message: 'Request not found or unauthorized' });
     }
 
-    // Only the requester can cancel their request
-    if (request.requesterEmail !== req.user.email) {
-      return res.status(403).json({ message: 'Unauthorized' });
-    }
-
+    // অলরেডি অ্যাপ্রুভড হয়ে গেলে রিকোয়েস্ট ডিলিট/ক্যান্সেল করতে দেওয়া যাবে না
     if (request.status === 'approved') {
-      return res
-        .status(400)
-        .json({ message: 'Cannot cancel an approved request' });
+      return res.status(400).json({ message: 'Cannot cancel an already approved request' });
     }
 
     await requestsCollection.deleteOne({ _id: new ObjectId(req.params.id) });
 
-    res.status(200).json({ message: 'Request cancelled successfully' });
+    res.status(200).json({ message: 'Adoption request cancelled successfully' });
   } catch (error) {
     console.error('Delete request error:', error);
     res.status(500).json({ message: 'Internal server error' });
